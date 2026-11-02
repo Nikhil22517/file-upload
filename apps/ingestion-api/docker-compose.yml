@@ -1,0 +1,58 @@
+# Database only (run the API / web app locally with pnpm):  docker compose up -d
+# Database + API + web app, all in containers:              docker compose --profile app up -d --build
+name: lmd-ingestion
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: lmd
+      POSTGRES_PASSWORD: lmd
+      POSTGRES_DB: lmd
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lmd -d lmd"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    profiles: ["app"]
+    build:
+      context: ../..                       # the monorepo root: the app needs packages/ingestion and packages/db
+      dockerfile: apps/ingestion-api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://lmd:lmd@postgres:5432/lmd
+      STORAGE_DIR: /data/files
+      PORT: "8000"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - files:/data/files
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  # the TanStack Start web app (apps/web): upload, confirm, teach templates. It shares Postgres and the
+  # upload folder with the API, so a file uploaded in one can be confirmed in the other.
+  web:
+    profiles: ["app"]
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://lmd:lmd@postgres:5432/lmd
+      STORAGE_DIR: /data/files
+      PORT: "3000"
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    volumes:
+      - files:/data/files
+    depends_on:
+      postgres: { condition: service_healthy }
+
+volumes:
+  pg-data:
+  files:

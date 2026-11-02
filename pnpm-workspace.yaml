@@ -1,0 +1,7 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# esbuild (used by tsx and drizzle-kit) needs its install script to fetch its binary
+onlyBuiltDependencies:
+  - esbuild

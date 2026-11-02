@@ -1,0 +1,21 @@
+{
+  "name": "platform",
+  "private": true,
+  "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "db:migrate": "pnpm --filter @platform/db db:migrate",
+    "db:studio": "pnpm --filter @platform/db db:studio",
+    "db:generate": "pnpm --filter @platform/db db:generate"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.0"
+  }
+}

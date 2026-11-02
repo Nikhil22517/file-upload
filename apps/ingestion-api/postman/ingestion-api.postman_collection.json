@@ -1,0 +1,526 @@
+{
+  "info": {
+    "name": "Ingestion API",
+    "description": "Upload reports and teach unknown ones once.\n\nRun top to bottom. Each request saves the ids it returns (workspaceId, fileId, templateId) into collection variables, so the next request just works.\n\n1. Setup: create (or find) the workspace for `workspaceCode`.\n2. Upload: pick files in the Body tab (key `files`, type File; add the key again for more files).\n3. If the file came back `needs_template`: get the draft, then teach the template. Upload the same report again and it is imported straight away.\n4. If it came back `needs_confirmation` or `needs_reference_date`: use Confirm.\n\nStart the API first: `docker compose up -d` and `pnpm dev` in apps/ingestion-api.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "workspaceCode",
+      "value": "PTLG",
+      "description": "DSP code; files for another DSP get a foreign_dsp warning"
+    },
+    {
+      "key": "workspaceId",
+      "value": ""
+    },
+    {
+      "key": "fileId",
+      "value": ""
+    },
+    {
+      "key": "templateId",
+      "value": ""
+    },
+    {
+      "key": "draftName",
+      "value": ""
+    }
+  ],
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('no server error', () => pm.expect(pm.response.code).to.be.below(500));"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Setup",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/health"
+          }
+        },
+        {
+          "name": "Create workspace",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 409 = it already exists: run 'List workspaces' to pick it up",
+                  "if (pm.response.code === 201) pm.collectionVariables.set('workspaceId', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/workspaces",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{workspaceCode}}\",\n  \"name\": \"Client {{workspaceCode}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "List workspaces (selects workspaceCode)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('workspaceCode').toUpperCase();",
+                  "const ws = pm.response.json().find((w) => w.code === code);",
+                  "if (ws) pm.collectionVariables.set('workspaceId', ws.id);",
+                  "pm.test(`workspace ${code} exists`, () => pm.expect(ws).to.exist);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/workspaces"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Upload",
+      "item": [
+        {
+          "name": "Upload files",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "const first = res.find((r) => r.id);",
+                  "if (first) pm.collectionVariables.set('fileId', first.id);",
+                  "if (first && first.draft) { pm.collectionVariables.set('draftName', first.draft.name); console.log('unknown report, suggested template:', first.draft.name, first.draft.columns.map((c) => `${c.header}: ${c.type}${c.role ? ` (${c.role})` : ''}`).join(', ')); }",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "res.forEach((r) => console.log(`${r.fileName}: ${r.stage}`, r.template ? `(template: ${r.template.name})` : '', r.warnings ?? r.error ?? ''));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/files",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "files",
+                  "type": "file",
+                  "src": "samples/Fuel_Log_PTLG_2026-07-01.csv",
+                  "description": "Defaults to the sample fuel log (an unknown report). Pick your own files here. In the Postman app, set Settings > Working directory to this postman folder for the sample to resolve."
+                },
+                {
+                  "key": "reference_date",
+                  "value": "2026-07-01",
+                  "type": "text",
+                  "disabled": true,
+                  "description": "Report date for exports with no date column (YYYY-MM-DD)"
+                }
+              ]
+            },
+            "description": "Saves the first file's id as fileId. Stages: imported = rows saved (see Get rows); stored_file_only = PDF, kept as a file; needs_template = teach it (folder 3); needs_confirmation / needs_reference_date = Confirm (folder 4); rejected = unreadable or too big."
+          }
+        },
+        {
+          "name": "Upload by URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const res = pm.response.json();",
+                  "const first = res.find((r) => r.id);",
+                  "if (first) pm.collectionVariables.set('fileId', first.id);",
+                  "if (first && first.draft) { pm.collectionVariables.set('draftName', first.draft.name); console.log('unknown report, suggested template:', first.draft.name, first.draft.columns.map((c) => `${c.header}: ${c.type}${c.role ? ` (${c.role})` : ''}`).join(', ')); }",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "res.forEach((r) => console.log(`${r.fileName}: ${r.stage}`, r.template ? `(template: ${r.template.name})` : '', r.warnings ?? r.error ?? ''));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/files",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"files\": [\n    {\n      \"url\": \"https://your-bucket.s3.amazonaws.com/reports/Quality_Overview_PTLG_DNJ4_2026-07-01.csv\"\n    }\n  ]\n}"
+            },
+            "description": "For files you stored yourself (S3, ...): send their URLs; the API downloads each one and keeps no copy. `file_name` per file is optional (defaults to the last part of the URL path); `reference_date` optional. The URL must stay readable until the file is imported: a held file is downloaded again when you confirm or teach it."
+          }
+        },
+        {
+          "name": "List uploads",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/workspaces/{{workspaceId}}/files?stage=needs_template",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "workspaces",
+                "{{workspaceId}}",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "stage",
+                  "value": "needs_template",
+                  "disabled": true,
+                  "description": "imported | stored_file_only | failed | needs_confirmation | needs_template | needs_reference_date"
+                },
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get upload",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/files/{{fileId}}"
+          }
+        },
+        {
+          "name": "Get rows (saved JSON)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "console.log(`${b.total} rows`);",
+                  "b.rows.slice(0, 3).forEach((r) => console.log(`line ${r.line}: driver ${r.driverKey ?? r.driverName}, day ${r.day}, week ${r.year}-W${r.week}`, JSON.stringify(r.data)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/workspaces/{{workspaceId}}/files/{{fileId}}/rows?limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "workspaces",
+                "{{workspaceId}}",
+                "files",
+                "{{fileId}}",
+                "rows"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "max 500"
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "disabled": true
+                },
+                {
+                  "key": "with_issues",
+                  "value": "true",
+                  "disabled": true,
+                  "description": "only rows with a value that could not be read"
+                }
+              ]
+            },
+            "description": "Each line of the file as saved in report_row: `data` (values keyed by column header, typed), driverKey/driverName, day, year/week, and `issues`."
+          }
+        },
+        {
+          "name": "Re-import",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/files/{{fileId}}/reimport",
+            "description": "Read the file again (imported or failed files). Replaces its rows, never doubles them."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Templates: teach, edit, analytics",
+      "item": [
+        {
+          "name": "Template draft (guesses)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = pm.response.json();",
+                  "pm.collectionVariables.set('draftName', d.name);",
+                  "console.log(`name: ${d.name}, header row: ${d.headerRow}, date from: ${d.periodSource}`);",
+                  "d.columns.forEach((col) => console.log(`  ${col.header}: ${col.type}${col.role ? ` (${col.role})` : ''}`));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/workspaces/{{workspaceId}}/files/{{fileId}}/template-draft",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "workspaces",
+                "{{workspaceId}}",
+                "files",
+                "{{fileId}}",
+                "template-draft"
+              ],
+              "query": [
+                {
+                  "key": "header_row",
+                  "value": "0",
+                  "disabled": true,
+                  "description": "Redraft from another row if the header guess is wrong"
+                }
+              ]
+            },
+            "description": "Optional: the upload response already includes this draft for an unknown report. Use it to look again, or `?header_row=` to redraft from another row."
+          }
+        },
+        {
+          "name": "Teach template",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "if (pm.response.code === 409) { console.log('Nothing to teach:', b.detail); return; } // already recognised, or the name is taken",
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('templateId', b.template.id);",
+                  "(b.files ?? []).forEach((f) => console.log(`file ${f.id}: ${f.stage}`));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/templates",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"file_id\": \"{{fileId}}\"\n}"
+            },
+            "description": "Accept the suggested template as it is: only `file_id` is needed (name defaults to the suggestion from the upload response). To correct it, add `name`, `header_row`, or the columns you change:\n\n\"columns\": [\n  { \"key\": \"gallons\", \"type\": \"decimal\" },\n  { \"key\": \"employee id\", \"role\": \"driver_id\" },\n  { \"key\": \"notes\", \"role\": null }\n]\n\ntypes: text, id, int, decimal, percent, date, datetime, week, yn. roles: driver_id, driver_name, date, week.\nOther uploads waiting for the same report are imported too (listed in `files`)."
+          }
+        },
+        {
+          "name": "List templates",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/templates"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const ts = pm.response.json();",
+                  "ts.forEach((t) => console.log(`${t.name} (v${t.version}): ${t.fileNamePattern}`));",
+                  "if (!pm.collectionVariables.get('templateId') && ts.length) pm.collectionVariables.set('templateId', ts[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get template",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/templates/{{templateId}}"
+          }
+        },
+        {
+          "name": "Edit template (columns, sections, period, analytics)",
+          "request": {
+            "method": "PATCH",
+            "url": {
+              "raw": "{{baseUrl}}/workspaces/{{workspaceId}}/templates/{{templateId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "workspaces",
+                "{{workspaceId}}",
+                "templates",
+                "{{templateId}}"
+              ]
+            },
+            "description": "Change what the template keeps and computes. columns: only the ones you change (include false skips a column). sections: PDF sections to keep (null = all). metrics replaces the list and is recomputed for every upload from the saved rows.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"period_kind\": \"day\",\n  \"columns\": [\n    {\n      \"key\": \"gallons\",\n      \"type\": \"decimal\",\n      \"include\": true\n    }\n  ],\n  \"metrics\": [\n    {\n      \"name\": \"Gallons per driver\",\n      \"op\": \"sum\",\n      \"column\": \"gallons\",\n      \"by\": \"driver\"\n    },\n    {\n      \"name\": \"Fills\",\n      \"op\": \"count\",\n      \"by\": \"file\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Template analytics",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/workspaces/{{workspaceId}}/templates/{{templateId}}/metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "workspaces",
+                "{{workspaceId}}",
+                "templates",
+                "{{templateId}}",
+                "metrics"
+              ]
+            },
+            "description": "The template's computed analytics across its uploads, newest uploads first (?metric=<key> for one)."
+          }
+        },
+        {
+          "name": "Upload analytics",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/workspaces/{{workspaceId}}/files/{{fileId}}/metrics",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "workspaces",
+                "{{workspaceId}}",
+                "files",
+                "{{fileId}}",
+                "metrics"
+              ]
+            },
+            "description": "One upload's analytics, as its template defines them."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Confirm a held file",
+      "item": [
+        {
+          "name": "Confirm (accept warnings)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/files/{{fileId}}/confirm",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accept_warnings\": true\n}"
+            },
+            "description": "For needs_confirmation: duplicate, foreign DSP, or changed columns (accepting updates the template)."
+          }
+        },
+        {
+          "name": "Confirm (report date)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/files/{{fileId}}/confirm",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference_date\": \"2026-07-01\"\n}"
+            },
+            "description": "For needs_reference_date: the export has no date column and none in its file name."
+          }
+        },
+        {
+          "name": "Confirm (report week)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/workspaces/{{workspaceId}}/files/{{fileId}}/confirm",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference_week\": \"2026-W27\"\n}"
+            },
+            "description": "For needs_reference_date on a weekly report (its template covers a week): the Amazon week, Sunday to Saturday."
+          }
+        }
+      ]
+    }
+  ]
+}
